@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "local-drift-adapter"
+version = "0.1.0"
+description = "Local Drift-Adapters: Mixture-of-Expert Embedding Translation for Vector Database Model Upgrades"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jonathan Politzki"},
+    {name = "Harshil Vejendla"},
+]
+
+dependencies = [
+    "torch>=2.0",
+    "sentence-transformers>=2.2",
+    "faiss-cpu>=1.7",
+    "scikit-learn>=1.3",
+    "datasets>=2.14",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "tqdm>=4.65",
+    "wandb>=0.15",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

@@ -1,0 +1,11 @@
+# Global Low-Rank Affine baseline
+adapter:
+  type: "affine"
+  rank: 32
+clustering:
+  method: "none"
+training:
+  lr: 0.001
+  epochs: 100
+  patience: 10
+  loss_fn: "combined"

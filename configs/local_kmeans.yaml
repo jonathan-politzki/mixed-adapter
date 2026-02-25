@@ -1,0 +1,7 @@
+# Local adapters with K-means clustering
+clustering:
+  method: "kmeans"
+  n_clusters: 8
+routing:
+  method: "soft"
+  temperature: 1.0

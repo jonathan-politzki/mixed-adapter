@@ -1,0 +1,8 @@
+# Local adapters with drift-aware clustering (novel contribution)
+clustering:
+  method: "drift_aware"
+  n_clusters: 8
+  drift_weight: 0.5
+routing:
+  method: "soft"
+  temperature: 1.0

@@ -1,0 +1,6 @@
+# Global Orthogonal Procrustes baseline
+adapter:
+  type: "procrustes"
+  fit_scaling: false
+clustering:
+  method: "none"

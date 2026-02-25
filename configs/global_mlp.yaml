@@ -1,0 +1,13 @@
+# Global Residual MLP baseline
+adapter:
+  type: "residual_mlp"
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.1
+clustering:
+  method: "none"
+training:
+  lr: 0.001
+  epochs: 100
+  patience: 10
+  loss_fn: "combined"

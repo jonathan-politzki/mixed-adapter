@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:arxiv.org)"
+      "WebFetch(domain:arxiv.org)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.10/bin/python3 -c \"\nimport faiss\nimport numpy as np\n\n# Simple FAISS sanity check\nd = 64\nn = 100\nx = np.random.randn\\(n, d\\).astype\\(np.float32\\)\nfaiss.normalize_L2\\(x\\)\nindex = faiss.IndexFlatIP\\(d\\)\nindex.add\\(x\\)\nD, I = index.search\\(x[:5], 10\\)\nprint\\('FAISS search shape:', I.shape\\)\nprint\\('Top-1 for each query \\(should be self\\):', I[:, 0]\\)\nprint\\('FAISS OK'\\)\n\")"
     ]
   }
 }

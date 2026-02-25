@@ -1,0 +1,53 @@
+# Base configuration for Local Drift-Adapter experiments
+
+data:
+  dataset: "msmarco"  # msmarco, nq, beir, heterogeneous
+  beir_name: null  # only used if dataset == beir
+  max_samples: 100000
+  train_split: 0.8  # fraction used for adapter training
+  val_split: 0.1
+  test_split: 0.1
+
+model_pair:
+  name: "minilm-6-to-12"
+  old_model: "sentence-transformers/all-MiniLM-L6-v2"
+  new_model: "sentence-transformers/all-MiniLM-L12-v2"
+
+adapter:
+  type: "procrustes"  # procrustes, affine, residual_mlp
+  # Procrustes-specific
+  fit_scaling: false
+  # Affine-specific
+  rank: 32
+  # ResidualMLP-specific
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.1
+
+training:
+  lr: 0.001
+  weight_decay: 0.00001
+  epochs: 100
+  batch_size: 512
+  patience: 10
+  loss_fn: "combined"  # mse, cosine, combined
+
+clustering:
+  method: "none"  # none, kmeans, drift_aware
+  n_clusters: 8
+  drift_weight: 0.5  # only for drift_aware
+
+routing:
+  method: "soft"  # soft, hard
+  temperature: 1.0
+
+evaluation:
+  k_values: [1, 5, 10, 100]
+
+output:
+  dir: "experiments/results"
+  save_adapters: true
+  save_plots: true
+
+seed: 42
+device: "cpu"  # cpu, cuda, mps

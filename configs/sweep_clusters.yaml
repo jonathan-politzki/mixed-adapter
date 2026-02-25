@@ -1,0 +1,11 @@
+# Sweep over number of clusters
+# Used with --sweep-k flag in run_experiment.py
+sweep:
+  parameter: "clustering.n_clusters"
+  values: [2, 4, 8, 16, 32, 64]
+clustering:
+  method: "drift_aware"
+  drift_weight: 0.5
+routing:
+  method: "soft"
+  temperature: 1.0

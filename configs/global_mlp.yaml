@@ -9,5 +9,5 @@ clustering:
 training:
   lr: 0.001
   epochs: 100
-  patience: 10
+  patience: 5
   loss_fn: "combined"

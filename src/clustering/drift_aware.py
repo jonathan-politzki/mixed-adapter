@@ -279,9 +279,21 @@ class DriftAwareClustering:
         X_old: np.ndarray,
         drift_vectors: np.ndarray,
     ) -> np.ndarray:
-        """Concatenate normalised position and weighted drift features."""
+        """Concatenate normalised position and weighted drift features.
+
+        Drift vectors are globally normalised (divided by the max L2 norm
+        across all samples) rather than per-point L2-normalised.  This
+        prevents amplification of random noise in regions where the global
+        adapter already fits well (small residuals stay near the origin).
+        """
         pos = _normalize(X_old)
-        drift = _normalize(drift_vectors) * self.drift_weight
+        # Global normalisation: scale all drift vectors by the max magnitude
+        # so the largest residual has unit norm but small residuals stay small.
+        max_norm = np.max(np.linalg.norm(drift_vectors, axis=1))
+        if max_norm > 0:
+            drift = (drift_vectors / max_norm) * self.drift_weight
+        else:
+            drift = drift_vectors * self.drift_weight
         return np.concatenate([pos, drift], axis=1)
 
     def _check_fitted(self) -> None:

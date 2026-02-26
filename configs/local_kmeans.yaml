@@ -1,7 +1,15 @@
 # Local adapters with K-means clustering
+adapter:
+  type: "affine"
+  rank: 32
 clustering:
   method: "kmeans"
   n_clusters: 8
 routing:
   method: "soft"
-  temperature: 1.0
+  temperature: 0.1
+training:
+  lr: 0.001
+  epochs: 100
+  patience: 5
+  loss_fn: "combined"

@@ -1,10 +1,24 @@
 .env
 .venv
+venv/
 __pycache__
 *.pyc
 *.pyo
 *.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzw
+*.egg-info/
+
+# Internal notes (not for public repo)
+CONTEXT.md
+ISSUES.md
+ANALYSIS.md
+
+# Data and experiment outputs (large files)
+/data/
+experiments/results/
+experiments/figures/
+*.npz
+
+# Caches
+.ruff_cache/
+.DS_Store
+._*

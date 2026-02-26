@@ -40,12 +40,17 @@ MODEL_PAIRS: dict[str, tuple[str, str]] = {
         "sentence-transformers/all-MiniLM-L6-v2",
         "sentence-transformers/all-MiniLM-L12-v2",
     ),
+    "minilm-to-e5-large": (
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "intfloat/e5-large-v2",
+    ),
 }
 """Mapping from friendly pair name to ``(old_model_name, new_model_name)``.
 
 * **bge-small-to-base** -- same family, dimension increase (384 -> 768).
 * **minilm-to-bge** -- cross-family, same dimension (384 -> 384).
 * **minilm-6-to-12** -- same family, same dimension (384 -> 384).
+* **minilm-to-e5-large** -- cross-family, large dimension gap (384 -> 1024).
 """
 
 

@@ -75,16 +75,28 @@ GLOBAL_CONFIGS: list[dict[str, Any]] = [
 ]
 
 # Local experiments -- different clustering strategies at k=8
+# Affine adapters (main comparison — can capture per-region drift)
 LOCAL_CONFIGS: list[dict[str, Any]] = [
     {
-        "name": "local_kmeans_k8",
+        "name": "local_kmeans_affine_k8",
         "config": "configs/local_kmeans.yaml",
         "overrides": ["--clustering.n_clusters=8"],
     },
     {
-        "name": "local_drift_aware_k8",
+        "name": "local_drift_aware_affine_k8",
         "config": "configs/local_drift_aware.yaml",
         "overrides": ["--clustering.n_clusters=8"],
+    },
+    # Procrustes local for ablation (shows clustering alone isn't enough)
+    {
+        "name": "local_kmeans_procrustes_k8",
+        "config": "configs/local_kmeans.yaml",
+        "overrides": ["--clustering.n_clusters=8", "--adapter.type=procrustes"],
+    },
+    {
+        "name": "local_drift_aware_procrustes_k8",
+        "config": "configs/local_drift_aware.yaml",
+        "overrides": ["--clustering.n_clusters=8", "--adapter.type=procrustes"],
     },
 ]
 

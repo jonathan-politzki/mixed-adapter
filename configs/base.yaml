@@ -28,18 +28,18 @@ training:
   lr: 0.001
   weight_decay: 0.00001
   epochs: 100
-  batch_size: 512
-  patience: 10
-  loss_fn: "combined"  # mse, cosine, combined
+  batch_size: 256
+  patience: 5
+  loss_fn: "combined"  # mse, cosine, combined (0.5 * MSE + 0.5 * cosine)
 
 clustering:
   method: "none"  # none, kmeans, drift_aware
   n_clusters: 8
-  drift_weight: 0.5  # only for drift_aware
+  drift_weight: 1.0  # only for drift_aware (paper: alpha=1.0)
 
 routing:
   method: "soft"  # soft, hard
-  temperature: 1.0
+  temperature: 0.1
 
 evaluation:
   k_values: [1, 5, 10, 100]

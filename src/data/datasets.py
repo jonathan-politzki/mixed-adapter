@@ -44,7 +44,10 @@ def load_msmarco(
         Unique passage text strings.
     """
     logger.info("Loading MS MARCO v2.1 passages (split=%s) ...", split)
-    ds = load_dataset("ms_marco", "v2.1", split=split, trust_remote_code=True)
+    try:
+        ds = load_dataset("ms_marco", "v2.1", split=split, trust_remote_code=True)
+    except TypeError:
+        ds = load_dataset("ms_marco", "v2.1", split=split)
 
     texts: list[str] = []
     for example in ds:

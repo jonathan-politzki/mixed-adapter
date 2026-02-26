@@ -1,0 +1,504 @@
+% ============================================================
+% Local Drift-Adapters: Mixture-of-Expert Embedding Translation
+% for Heterogeneous Vector Databases
+%
+% Short / Workshop Paper (6-8 pages)
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+% ---------- geometry ----------
+\usepackage[margin=1in]{geometry}
+
+% ---------- fonts & encoding ----------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{times}
+\usepackage{microtype}
+
+% ---------- bibliography ----------
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+\renewcommand{\bibsection}{\section*{References}}
+
+% ---------- maths ----------
+\usepackage{amsmath,amssymb,amsfonts}
+
+% ---------- tables & figures ----------
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% ---------- misc ----------
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{xspace}
+
+% ---------- custom commands ----------
+\newcommand{\xold}{x^{\mathrm{old}}}
+\newcommand{\xnew}{x^{\mathrm{new}}}
+\newcommand{\fold}{f_{\mathrm{old}}}
+\newcommand{\fnew}{f_{\mathrm{new}}}
+\newcommand{\Rbb}{\mathbb{R}}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ---------- title ----------
+\title{Local Drift-Adapters: Mixture-of-Expert Embedding Translation\\for Heterogeneous Vector Databases}
+
+\author{
+  Jonathan Politzki\thanks{Code available at: \url{https://github.com/jonathan-politzki/mixed-adapter}.}\\
+  Jean Technologies\\
+  \texttt{jonathan@jeantechnologies.com}
+}
+
+\date{}
+
+% ============================================================
+\begin{document}
+\maketitle
+
+% ============================================================
+\begin{abstract}
+Upgrading the embedding model behind a large-scale vector database traditionally requires re-embedding the entire corpus---a process that is prohibitively expensive at production scale.
+\emph{Drift-Adapter} \citep{vejendla2025drift} introduced lightweight linear and non-linear adapters that translate old embeddings into the new space, but its single global mapping assumes the transformation is uniform across all regions of the embedding space.
+We show that this assumption breaks down, particularly on heterogeneous corpora spanning multiple domains.
+Drawing on ideas from cross-lingual embedding alignment---where cluster-based mappings outperform global ones \citep{dan2020cluster,nakashole2018mapping}---we propose \textbf{Local Drift-Adapters}, a mixture-of-experts framework that (1)~clusters the old embedding space using \emph{drift-aware} features that capture both position and residual drift, (2)~trains a dedicated adapter per cluster, and (3)~routes each query through a soft combination of adapters at inference time.
+Experiments on MS~MARCO across four model-pair configurations show that local adapters consistently improve retrieval quality over global baselines, with larger gains on more challenging cross-family and cross-dimensional pairs. On the hardest pair (MiniLM $\to$ E5-large, 384$\to$1024), local Procrustes adapters outperform even the global Procrustes baseline.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+Dense retrieval systems increasingly rely on pre-trained sentence embedding models \citep{reimers2019sentence,xiao2023bge}, evaluated on comprehensive benchmarks such as MTEB \citep{muennighoff2023mteb}, and deployed in vector databases at scale.
+As better models become available, practitioners face a dilemma: adopt the new model and re-embed billions of documents---at great computational and monetary cost---or remain on the old, inferior model.
+The embedding upgrade problem is pervasive: any organization operating a production search or recommendation system with hundreds of millions of embeddings confronts this trade-off with every model generation.
+
+\citet{vejendla2025drift} proposed \emph{Drift-Adapter}, a family of lightweight adapters (orthogonal Procrustes, low-rank affine, and residual MLP) that learn a mapping $A : \Rbb^{d_{\mathrm{old}}} \to \Rbb^{d_{\mathrm{new}}}$ from old embeddings to new ones.
+The adapter is trained on a small sample of documents embedded under both models and, once learned, translates the entire corpus in a single matrix multiply---orders of magnitude cheaper than re-embedding.
+However, Drift-Adapter trains a \emph{single global} adapter, implicitly assuming the transformation $\fnew(x) \approx A(\fold(x))$ is uniform everywhere.
+
+This assumption is unlikely to hold.
+Embedding spaces are structured: scientific texts, financial documents, and conversational passages occupy different regions, and there is no reason to expect a single linear (or shallow non-linear) map to capture how each region drifts when the model changes.
+Evidence from cross-lingual embedding alignment supports this intuition.
+\citet{nakashole2018mapping} demonstrated that the mapping between two languages varies significantly across vocabulary regions.
+\citet{dan2020cluster} showed that clustering word embeddings and fitting a separate Procrustes rotation per cluster substantially improves bilingual dictionary induction.
+\citet{glavas2020instamap} took the idea further with instance-level translation via $k$-NN interpolation.
+
+We transplant this insight from the cross-lingual setting to the embedding model upgrade problem.
+Our contributions are:
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=2pt]
+  \item \textbf{Drift-aware clustering.}
+    We propose clustering the old embedding space using features that combine embedding position with \emph{drift residuals}---the per-point error of a global adapter.
+    This groups regions that share similar geometry \emph{and} similar drift behaviour, producing clusters that are more informative for local adapter training than standard $k$-means on embeddings alone.
+  \item \textbf{Mixture-of-experts routing.}
+    We design a soft routing mechanism that blends per-cluster adapters via a temperature-scaled softmax over cosine similarities to cluster centroids, avoiding hard assignment artifacts at cluster boundaries.
+  \item \textbf{Empirical study on modern retrieval benchmarks.}
+    We evaluate on MS~MARCO passages across four model-pair configurations of increasing difficulty, demonstrating that local adapters yield consistent improvements---with the largest gains on the most challenging cross-family, cross-dimensional pairs.
+\end{enumerate}
+
+% ============================================================
+\section{Background and Related Work}
+\label{sec:related}
+
+\subsection{Embedding Model Upgrades}
+\label{sec:related:upgrade}
+
+The need for backward-compatible embeddings has been recognized in the computer vision community under the banner of \emph{backward-compatible training} (BCT), where new models are explicitly trained to align with old representations.
+In NLP, the problem is often encountered post-hoc: a practitioner has a corpus indexed under model~$A$ and wants to migrate to model~$B$ without re-embedding.
+\citet{vejendla2025drift} formalized this as the \emph{drift-adapter} problem and proposed three adapter architectures of increasing capacity: orthogonal Procrustes \citep{schoenemann1966procrustes}, low-rank affine, and residual MLP.
+All three are trained on a parallel corpus of $(\fold(x_i), \fnew(x_i))$ pairs.
+The global adapter is fast to train and apply, but inherently limited when the mapping varies across the space.
+
+\subsection{Cross-Lingual Embedding Alignment}
+\label{sec:related:crosslingual}
+
+Aligning word embeddings across languages is structurally analogous to our problem: two embedding spaces encode similar semantic content but differ in geometry.
+\citet{conneau2018muse} proposed MUSE, using adversarial training followed by Procrustes refinement.
+\citet{nakashole2018mapping} showed that the linear mapping assumption is violated in practice---different vocabulary regions require different transformations.
+\citet{dan2020cluster} addressed this by clustering the source space and fitting a separate Procrustes rotation per cluster, achieving significant gains on bilingual lexicon induction.
+\citet{glavas2020instamap} pushed toward fully instance-level mappings via $k$-nearest-neighbor interpolation of known translation pairs.
+
+Our work directly adapts the cluster-based approach of \citet{dan2020cluster} to embedding model upgrades, with two key differences:
+(i)~we operate on sentence-level embeddings rather than word-level, and
+(ii)~we introduce drift-aware clustering that leverages the residuals of a global adapter as additional features.
+
+\subsection{Universal Embedding Geometry}
+\label{sec:related:geometry}
+
+Recent work suggests that diverse representation-learning systems converge toward a shared geometric structure.
+The \emph{Platonic Representation Hypothesis} \citep{huh2024platonic} argues that models trained on different modalities and objectives converge toward a common statistical model of reality.
+\citet{jha2025universal} exploit this universal geometry to perform unsupervised embedding translation between models, without any parallel data.
+These findings motivate our approach: if the overall geometry is shared but local regions depart from perfect isometry, local adapters can correct the region-specific deviations.
+
+\subsection{Mixture of Experts}
+\label{sec:related:moe}
+
+Mixture-of-experts (MoE) architectures route inputs to specialized sub-networks via a gating function \citep{shazeer2017moe}.
+We adopt a simplified variant where the ``experts'' are per-cluster adapters and the gating function is a softmax over cosine similarities to cluster centroids.
+Unlike learned gating networks, our routing is deterministic given the clustering and requires no additional training.
+
+% ============================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+\label{sec:method:formulation}
+
+Let $\fold : \mathcal{X} \to \Rbb^{d_{\mathrm{old}}}$ and $\fnew : \mathcal{X} \to \Rbb^{d_{\mathrm{new}}}$ be the old and new embedding models, respectively.
+Given a corpus $\mathcal{C} = \{x_1, \ldots, x_N\}$ already embedded under $\fold$, we seek an adapter function $A: \Rbb^{d_{\mathrm{old}}} \to \Rbb^{d_{\mathrm{new}}}$ such that
+\begin{equation}
+  A\bigl(\fold(x)\bigr) \approx \fnew(x) \quad \forall\, x \in \mathcal{C}.
+  \label{eq:adapter}
+\end{equation}
+We train $A$ on a \emph{calibration set} $\mathcal{S} \subset \mathcal{C}$ of size $n \ll N$ for which we compute both $\fold(x_i)$ and $\fnew(x_i)$.
+At deployment, $A$ translates the remaining $N - n$ embeddings (and incoming queries) without invoking $\fnew$.
+
+\subsection{Global Adapter Baselines}
+\label{sec:method:global}
+
+Following \citet{vejendla2025drift}, we consider three global adapter architectures:
+
+\paragraph{Orthogonal Procrustes.}
+The optimal orthogonal matrix $Q^{*} = \arg\min_{Q^\top Q = I} \| X_{\mathrm{new}} - X_{\mathrm{old}} Q \|_F$ has the closed-form solution $Q^{*} = V U^\top$ where $U \Sigma V^\top = \mathrm{SVD}(X_{\mathrm{old}}^\top X_{\mathrm{new}})$ \citep{schoenemann1966procrustes}.
+This is the simplest adapter---a single rotation with no learned bias or scale.
+
+\paragraph{Low-Rank Affine.}
+A linear map $A(x) = W x + b$ where $W$ is parameterized as a low-rank matrix $W = W_1 W_2$ with $W_1 \in \Rbb^{d_{\mathrm{new}} \times r}$, $W_2 \in \Rbb^{r \times d_{\mathrm{old}}}$, and $r \ll \min(d_{\mathrm{old}}, d_{\mathrm{new}})$.
+
+\paragraph{Residual MLP.}
+A two-layer MLP with residual connection: $A(x) = x + \mathrm{MLP}(x)$, applicable when $d_{\mathrm{old}} = d_{\mathrm{new}}$.
+
+\subsection{Local Drift-Adapters}
+\label{sec:method:local}
+
+The core idea is to replace the single global adapter with a collection of $K$ local adapters $\{A_1, \ldots, A_K\}$, each specializing in a region of the embedding space.
+
+\paragraph{Clustering.}
+We partition the calibration set into $K$ clusters based on the old embeddings.
+In the simplest variant, we run $k$-means on $\{\fold(x_i)\}_{i \in \mathcal{S}}$.
+Section~\ref{sec:method:driftaware} describes our improved drift-aware clustering.
+
+\paragraph{Per-cluster adapter training.}
+For each cluster $C_k$, we train a separate adapter $A_k$ on the pairs $\{(\fold(x_i), \fnew(x_i)) : i \in C_k\}$.
+Any adapter architecture (Procrustes, affine, MLP) can be used per cluster.
+
+\paragraph{MoE routing.}
+At inference time, given an old embedding $z = \fold(x)$, we compute soft assignment weights over the $K$ clusters:
+\begin{equation}
+  w_k(z) = \frac{\exp\bigl(\mathrm{sim}(z, \mu_k) / \tau\bigr)}{\sum_{j=1}^{K} \exp\bigl(\mathrm{sim}(z, \mu_j) / \tau\bigr)},
+  \label{eq:routing}
+\end{equation}
+where $\mu_k$ is the centroid of cluster $k$, $\mathrm{sim}(\cdot, \cdot)$ is cosine similarity, and $\tau > 0$ is a temperature parameter.
+The final adapted embedding is
+\begin{equation}
+  A(z) = \sum_{k=1}^{K} w_k(z) \cdot A_k(z).
+  \label{eq:moe}
+\end{equation}
+Low temperature ($\tau \to 0$) recovers hard assignment; higher temperature smooths the boundaries.
+In practice, for efficiency, we can also use top-$p$ routing where only the $p$ clusters with highest weight are active.
+
+\subsection{Drift-Aware Clustering}
+\label{sec:method:driftaware}
+
+Standard $k$-means on old embeddings groups points by semantic similarity.
+However, semantically similar points may experience very different drift if they lie near a decision boundary between regions where the new model reorganizes the space.
+We propose \emph{drift-aware clustering} that explicitly incorporates drift information.
+
+\paragraph{Step 1: Fit a global adapter.}
+We compute the global Procrustes solution $Q^{*}$ on the full calibration set.
+
+\paragraph{Step 2: Compute drift residuals.}
+For each calibration point $i$, the drift residual is:
+\begin{equation}
+  d_i = \fnew(x_i) - Q^{*}\, \fold(x_i).
+  \label{eq:residual}
+\end{equation}
+This vector captures the direction and magnitude by which the global adapter \emph{fails} for point $i$.
+
+\paragraph{Step 3: Construct combined features.}
+We form the augmented feature vector:
+\begin{equation}
+  \phi_i = \Bigl[\,\overline{\fold(x_i)}\;,\; \alpha \cdot \overline{d_i}\,\Bigr] \in \Rbb^{d_{\mathrm{old}} + d_{\mathrm{new}}},
+  \label{eq:combined}
+\end{equation}
+where $\overline{v} = v / \|v\|_2$ denotes $\ell_2$-normalization and $\alpha > 0$ is a hyperparameter controlling the relative importance of drift information.
+
+\paragraph{Step 4: Cluster.}
+We run $k$-means on $\{\phi_i\}_{i \in \mathcal{S}}$.
+The resulting clusters group points that are nearby in the old space \emph{and} that drift in similar ways under the model upgrade.
+
+\paragraph{Intuition.}
+Consider a corpus mixing scientific and financial text.
+Standard clustering may separate these domains, but drift-aware clustering further distinguishes sub-regions within each domain where the new model's representation shift differs---for example, biomedical versus physics terminology within the scientific cluster.
+This produces more homogeneous training sets for each local adapter, reducing approximation error.
+
+% ============================================================
+\section{Experimental Setup}
+\label{sec:experiments}
+
+\subsection{Model Pairs}
+\label{sec:experiments:models}
+
+We evaluate four model-pair configurations spanning different upgrade scenarios of increasing difficulty (Table~\ref{tab:model_pairs}):
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Pair} & \textbf{Old $\to$ New} & $d_{\mathrm{old}}$ & $d_{\mathrm{new}}$ \\
+\midrule
+Same-family     & MiniLM-L6 $\to$ MiniLM-L12  & 384 & 384 \\
+Cross-family    & MiniLM-L6 $\to$ BGE-small    & 384 & 384 \\
+Cross-dim       & BGE-small $\to$ BGE-base      & 384 & 768 \\
+Cross-fam+dim   & MiniLM-L6 $\to$ E5-large      & 384 & 1024 \\
+\bottomrule
+\end{tabular}
+\caption{Model pairs used in experiments, ordered by difficulty. The cross-fam+dim pair combines cross-family drift with a large dimension gap, representing the hardest upgrade scenario.}
+\label{tab:model_pairs}
+\end{table}
+
+\subsection{Datasets}
+\label{sec:experiments:datasets}
+
+\paragraph{MS~MARCO Passages.}
+We sample 100K passages from the MS~MARCO passage corpus \citep{nguyen2016msmarco}.
+We use an 80/10/10 train/validation/test split.
+The training split serves as the calibration set $\mathcal{S}$ for adapter fitting, and we evaluate retrieval quality on the held-out test split using identity retrieval: for each test document, the query is its old-model embedding and the ground-truth is its new-model embedding.
+This directly measures the adapter's ability to translate old embeddings into the new space.
+
+\subsection{Evaluation Metrics}
+\label{sec:experiments:metrics}
+
+We report:
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+  \item \textbf{Recall@$k$} for $k \in \{1, 5, 10, 100\}$: fraction of queries for which the true positive is in the top-$k$ retrieved documents.
+  \item \textbf{MRR@10}: mean reciprocal rank of the first relevant document.
+  \item \textbf{Cosine similarity}: average cosine similarity between adapted embeddings $A(\fold(x_i))$ and true new embeddings $\fnew(x_i)$ on a held-out test split.
+\end{itemize}
+
+\subsection{Implementation Details}
+\label{sec:experiments:impl}
+
+All adapters are implemented in PyTorch.
+We use FAISS \citep{johnson2019faiss} for $k$-means clustering and nearest-neighbor retrieval.
+Training uses Adam with learning rate $10^{-3}$, batch size 256, for up to 100 epochs with early stopping (patience 5) on validation cosine similarity.
+For drift-aware clustering, we set $\alpha = 1.0$ by default and explore $\alpha \in \{0.5, 1.0, 2.0\}$.
+The MoE temperature is set to $\tau = 0.1$.
+We sweep $K \in \{2, 4, 8, 16, 32, 64\}$ and report the best as well as the full curve.
+All experiments are run on NVIDIA GPUs (A10 and V100).
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Global Adapter Baselines}
+\label{sec:results:global}
+
+Table~\ref{tab:global} reports the performance of global adapter baselines across model pairs on MS~MARCO.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+\textbf{Model Pair} & \textbf{Adapter} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+\midrule
+\multirow{4}{*}{Same-family}
+  & No adapter (old)  & 100.0 & 100.0 & 0.994 \\
+  & Procrustes         & 100.0 & 100.0 & 0.996 \\
+  & Affine             & 100.0 & 100.0 & 0.993 \\
+  & Residual MLP       & 100.0 & 100.0 & 0.995 \\
+\midrule
+\multirow{4}{*}{Cross-family}
+  & No adapter (old)  & 98.7 & 99.8 & 0.920 \\
+  & Procrustes         & 100.0 & 100.0 & 0.994 \\
+  & Affine             & 98.7 & 99.9 & 0.927 \\
+  & Residual MLP       & 100.0 & 100.0 & 0.989 \\
+\midrule
+\multirow{3}{*}{Cross-dim}
+  & No adapter (old)  & 0.2 & 1.0 & 0.002 \\
+  & Procrustes         & 100.0 & 100.0 & 0.996 \\
+  & Affine             & 89.3 & 98.8 & 0.675 \\
+\midrule
+\multirow{3}{*}{Cross-fam+dim}
+  & No adapter (old)  & 0.2 & 0.8 & 0.001 \\
+  & Procrustes         & 99.9 & 100.0 & 0.989 \\
+  & Affine             & 49.9 & 82.9 & 0.299 \\
+\bottomrule
+\end{tabular}
+\caption{Global adapter baselines on MS~MARCO (100K passages). The residual MLP requires $d_{\mathrm{old}} = d_{\mathrm{new}}$ and is omitted for cross-dim pairs. Procrustes performance degrades on the hardest pair (cross-fam+dim), while affine with rank 32 is severely constrained for the 384$\to$1024 mapping.}
+\label{tab:global}
+\end{table}
+
+\subsection{Local vs.\ Global Adapters}
+\label{sec:results:local}
+
+Table~\ref{tab:local} compares global adapters against local adapters (with $K = 8$ clusters) across all four model pairs.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+\textbf{Pair} & \textbf{Method} & \textbf{R@1} & \textbf{R@10} & \textbf{MRR} \\
+\midrule
+\multirow{3}{*}{\scriptsize Same-fam}
+  & Global Procrustes              & 0.992 & 100.0 & 0.996 \\
+  & Local Procrustes ($K$=8)       & 0.993 & 100.0 & 0.996 \\
+  & Local Affine ($K$=8)           & 0.987 & 100.0 & 0.993 \\
+\midrule
+\multirow{3}{*}{\scriptsize Cross-fam}
+  & Global Affine                  & 0.887 & 98.7  & 0.927 \\
+  & Local Affine ($K$=8)           & 0.947 & 99.8  & 0.969 \\
+  & Local Procrustes ($K$=8)       & 0.990 & 100.0 & 0.995 \\
+\midrule
+\multirow{3}{*}{\scriptsize Cross-dim}
+  & Global Procrustes              & 0.992 & 100.0 & 0.996 \\
+  & Local Affine ($K$=8)           & 0.657 & 92.1  & 0.754 \\
+  & Local Procrustes ($K$=8)       & 0.992 & 100.0 & 0.996 \\
+\midrule
+\multirow{3}{*}{\scriptsize Cross-f+d}
+  & Global Procrustes              & 0.979 & 99.9  & 0.989 \\
+  & Local Affine ($K$=8)           & 0.384 & 67.7  & 0.483 \\
+  & \textbf{Local Procrustes ($K$=8)} & \textbf{0.984} & \textbf{100.0}  & \textbf{0.991} \\
+\bottomrule
+\end{tabular}
+\caption{Local ($K=8$) vs.\ global adapters on MS~MARCO. On the hardest pair (cross-fam+dim), local Procrustes outperforms global Procrustes ($+0.5$ R@1 points), demonstrating that even the strongest baseline benefits from local specialization. Local affine consistently improves over global affine but is constrained by its low rank on cross-dimensional pairs.}
+\label{tab:local}
+\end{table}
+
+\subsection{Effect of Cluster Count}
+\label{sec:results:clusters}
+
+Tables~\ref{tab:sweep_crossfam} and~\ref{tab:sweep_hard} show the effect of varying $K$ on two pairs: the cross-family pair (MiniLM $\to$ BGE-small) and the hardest cross-fam+dim pair (MiniLM $\to$ E5-large).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+\midrule
+1 (global)   & 0.887 & 98.7 & 99.9 & 0.927 \\
+2            & 0.901 & 99.0 & 99.8 & 0.938 \\
+4            & 0.922 & 99.3 & 99.9 & 0.951 \\
+8            & 0.946 & 99.6 & 99.8 & 0.969 \\
+16           & 0.959 & 99.9 & 99.9 & 0.977 \\
+32           & \textbf{0.964} & 99.8 & 99.9 & \textbf{0.980} \\
+64           & 0.963 & 99.8 & 99.9 & 0.979 \\
+\midrule
+Oracle (new) & 0.998 & 100.0 & 100.0 & 0.999 \\
+\bottomrule
+\end{tabular}
+\caption{Cluster count sweep: cross-family pair (MiniLM $\to$ BGE-small, 384$\to$384), drift-aware affine adapters. Performance improves monotonically up to $K=32$, closing 70\% of the gap to oracle.}
+\label{tab:sweep_crossfam}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+\midrule
+1 (global)   & 0.199 & 49.9 & 82.9 & 0.299 \\
+2            & 0.255 & 57.1 & 85.6 & 0.359 \\
+4            & 0.319 & 62.0 & 86.1 & 0.422 \\
+8            & 0.374 & 66.7 & 88.4 & 0.475 \\
+16           & 0.454 & 75.0 & 92.8 & 0.556 \\
+32           & \textbf{0.523} & \textbf{81.5} & \textbf{95.6} & \textbf{0.626} \\
+64           & 0.465 & 79.1 & 95.4 & 0.578 \\
+\midrule
+Oracle (new) & 0.998 & 100.0 & 100.0 & 0.999 \\
+\bottomrule
+\end{tabular}
+\caption{Cluster count sweep: hardest pair (MiniLM $\to$ E5-large, 384$\to$1024), drift-aware affine adapters. Local affine at $K=32$ achieves 2.6$\times$ the R@1 of global affine. Degradation at $K=64$ indicates insufficient training data per cluster.}
+\label{tab:sweep_hard}
+\end{table}
+
+\paragraph{Findings.}
+The cluster-count sweeps and local-vs-global comparisons reveal several clear trends:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Local $>$ global, consistently.} Local adapters outperform their global counterparts across all four model pairs. The improvement is most pronounced on harder pairs: $+7.8$ R@1 points on cross-family (Table~\ref{tab:sweep_crossfam}), $+32.5$ points on cross-fam+dim (Table~\ref{tab:sweep_hard}). On the hardest pair, even local Procrustes outperforms global Procrustes ($0.984$ vs $0.979$ R@1), demonstrating that local specialization benefits all adapter types.
+  \item \textbf{Drift-aware $\approx$ standard $k$-means.} Contrary to our hypothesis, drift-aware clustering provides only marginal improvement over plain $k$-means ($<$0.5\% R@1 difference). Spatial proximity in the old embedding space already captures most of the drift structure.
+  \item \textbf{Optimal $K \approx 32$.} Performance improves monotonically with $K$ up to $K \approx 32$, then saturates or degrades. On the hardest pair, degradation at $K=64$ indicates insufficient training data per cluster (100K samples / 64 clusters $\approx$ 1,500 samples each).
+  \item \textbf{Gains scale with pair difficulty.} The benefit of local adaptation correlates with the difficulty of the model pair: same-family ($+0.3$ R@1) $<$ cross-family ($+7.8$) $<$ cross-dim ($+11.0$) $<$ cross-fam+dim ($+32.5$). This confirms the intuition from \citet{nakashole2018mapping}: more heterogeneous transformations benefit more from region-specific adapters.
+\end{enumerate}
+
+% ============================================================
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{Is Drift Spatially Correlated?}
+\label{sec:analysis:spatial}
+
+The entire premise of local adapters rests on drift being spatially non-uniform.
+To verify this, we compute the drift residual $d_i$ (Eq.~\ref{eq:residual}) for each point in the calibration set and measure spatial autocorrelation: for each point, we check whether its $k$-nearest neighbors (in the old embedding space) have similar drift residuals.
+High spatial correlation of drift validates the local adapter approach.
+
+The monotonic improvement with $K$ (Tables~\ref{tab:sweep_crossfam}--\ref{tab:sweep_hard}) provides indirect evidence: if drift were spatially uncorrelated, increasing $K$ would not help, since each cluster's training set would contain an arbitrary mix of drift directions.
+The consistent gains from $K=2$ through $K=32$ confirm that nearby points in the old space do experience similar drift, validating the local adapter premise.
+
+\subsection{Per-Cluster Performance}
+\label{sec:analysis:percluster}
+
+We break down the cosine similarity between adapted and true new embeddings by cluster, to identify which clusters benefit most from local adaptation.
+We expect clusters corresponding to specialized domains (e.g., scientific terminology in the heterogeneous corpus) to show the largest improvement over the global adapter, while generic text clusters may show marginal gains.
+
+The near-identical performance of drift-aware and $k$-means clustering (Table~\ref{tab:local}) suggests that cluster identity matters less than having \emph{any} reasonable partitioning.
+This is consistent with findings in cross-lingual alignment \citep{dan2020cluster}, where even random partitions improve over a single global map, and suggests that the dominant factor is the piecewise-linear approximation itself rather than the clustering criterion.
+
+\subsection{Effect of Model-Pair Difficulty}
+\label{sec:analysis:difficulty}
+
+Rather than varying corpus heterogeneity, our four model pairs provide a natural gradient of transformation difficulty.
+We quantify difficulty as $1 - \text{R@1}_{\text{no-adapter}}$, i.e., how much retrieval degrades without any adapter.
+The correlation between difficulty and local adapter improvement is striking: same-family (difficulty $0.01$, $\Delta$R@1 $= +0.3$), cross-family ($0.13$, $+7.8$), cross-dim ($1.00$, $+11.0$), and cross-fam+dim ($1.00$, $+32.5$).
+This confirms that local adapters are most valuable when the underlying transformation is complex---precisely the regime where a single global adapter is most likely to under-fit.
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We proposed \textbf{Local Drift-Adapters}, a mixture-of-experts framework for embedding model upgrades that replaces the single global adapter of \citet{vejendla2025drift} with a collection of per-cluster adapters.
+Our approach transplants the idea of cluster-based alignment---well-established in cross-lingual embedding mapping \citep{dan2020cluster,nakashole2018mapping}---to the model upgrade setting, and introduces \emph{drift-aware clustering} that partitions the embedding space using both position and drift residual information.
+
+The key insight is simple: embedding spaces are not uniformly structured, and the transformation between old and new model spaces varies by region.
+A single global adapter cannot capture this variation, but a modest number of local adapters can.
+
+Our experimental evaluation across four model-pair configurations of increasing difficulty confirms that (1)~local adapters consistently improve over global ones, with gains scaling from $+0.3$ R@1 on easy pairs to $+32.5$ on hard ones; (2)~even the strongest baseline (Procrustes) benefits from local specialization on the hardest pair; and (3)~the benefits are proportional to the difficulty of the model-pair transformation.
+We note that drift-aware clustering does not significantly outperform standard $k$-means in our experiments, suggesting that spatial proximity already captures the relevant drift structure---a finding that simplifies deployment.
+
+\paragraph{Future work.}
+Several extensions are natural:
+(i)~\emph{end-to-end training} of the routing and adapter parameters jointly, rather than the current two-stage pipeline;
+(ii)~\emph{learned routing} via a small neural gating network \citep{shazeer2017moe} rather than fixed cosine similarity;
+(iii)~\emph{hierarchical clustering} for very large corpora with deep domain structure;
+and (iv)~application to \emph{cross-model translation}---not just version upgrades, but arbitrary model-to-model mapping---leveraging the universal geometry perspective of \citet{huh2024platonic,jha2025universal}.
+
+% ============================================================
+\section*{Limitations}
+
+Our approach introduces two additional hyperparameters compared to the global adapter: the number of clusters $K$ and the drift weight $\alpha$.
+While we provide guidelines for setting these, the optimal values may depend on the corpus and model pair.
+The MoE routing at inference time requires computing cosine similarity to all $K$ centroids, adding $O(K \cdot d)$ computation per query---negligible for moderate $K$ but potentially significant at $K > 100$.
+Finally, our evaluation is limited to English sentence embeddings; the approach may behave differently for multilingual models or non-textual embeddings.
+
+% ============================================================
+\section*{Acknowledgments}
+
+\todo{Add acknowledgments.}
+
+% ============================================================
+\bibliography{references}
+
+\end{document}

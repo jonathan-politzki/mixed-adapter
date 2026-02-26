@@ -1,46 +1,73 @@
 """Retrieval evaluation metrics for embedding adapter quality.
 
-All functions expect dense numpy arrays and use FAISS for nearest-neighbour
-search so that evaluation scales to million-point corpora.
+Uses FAISS for nearest-neighbour search when corpus is large; falls back to
+NumPy for small corpora to avoid FAISS segfaults on some macOS setups.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Sequence
 
-import faiss
 import numpy as np
 from sklearn.metrics import ndcg_score
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _build_flat_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
-    """Build a FAISS inner-product index over L2-normalised embeddings.
-
-    Using inner product on L2-normalised vectors is equivalent to cosine
-    similarity, which is standard for dense retrieval evaluation.
-    """
-    embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
-    faiss.normalize_L2(embeddings)
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(embeddings)
-    return index
+# Threshold below which we use NumPy instead of FAISS (avoids macOS segfaults)
+_NUMPY_FALLBACK_THRESHOLD = 50_000
 
 
-def _search(
-    index: faiss.IndexFlatIP,
-    queries: np.ndarray,
+def _row_normalize(X: np.ndarray) -> np.ndarray:
+    """L2-normalize rows of X in-place (or return normalized copy)."""
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    return X / norms
+
+
+def _numpy_search(
+    query_embeddings: np.ndarray,
+    corpus_embeddings: np.ndarray,
     k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Search *index* for the *k* nearest neighbours of each query.
+    """Cosine-similarity NN search using NumPy (no FAISS).
 
-    Returns ``(distances, indices)`` arrays of shape ``(n_queries, k)``.
+    Returns (distances, indices) of shape (n_queries, k).
     """
-    queries = np.ascontiguousarray(queries, dtype=np.float32)
-    faiss.normalize_L2(queries)
-    return index.search(queries, k)
+    q = _row_normalize(np.asarray(query_embeddings, dtype=np.float32).copy())
+    c = _row_normalize(np.asarray(corpus_embeddings, dtype=np.float32).copy())
+    sim = q @ c.T
+    k = min(k, sim.shape[1])
+    idx = np.argsort(-sim, axis=1)[:, :k]
+    dist = np.take_along_axis(sim, idx, axis=1)
+    return dist, idx
+
+
+def _faiss_search(
+    query_embeddings: np.ndarray,
+    corpus_embeddings: np.ndarray,
+    k: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """FAISS inner-product (cosine) search."""
+    import faiss
+
+    c = np.ascontiguousarray(corpus_embeddings, dtype=np.float32).copy()
+    q = np.ascontiguousarray(query_embeddings, dtype=np.float32).copy()
+    faiss.normalize_L2(c)
+    faiss.normalize_L2(q)
+    index = faiss.IndexFlatIP(c.shape[1])
+    index.add(c)
+    k = min(k, c.shape[0])
+    return index.search(q, k)
+
+
+def _nn_search(
+    query_embeddings: np.ndarray,
+    corpus_embeddings: np.ndarray,
+    k: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Nearest-neighbour search; uses NumPy for small corpora, FAISS otherwise."""
+    n_corpus = corpus_embeddings.shape[0]
+    if n_corpus < _NUMPY_FALLBACK_THRESHOLD:
+        return _numpy_search(query_embeddings, corpus_embeddings, k)
+    return _faiss_search(query_embeddings, corpus_embeddings, k)
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +98,8 @@ def compute_recall_at_k(
     -------
     Dictionary mapping ``"recall@{k}"`` to the recall value.
     """
-    max_k = max(k_values)
-    index = _build_flat_index(corpus_embeddings.copy())
-    _, nn_indices = _search(index, query_embeddings.copy(), max_k)
+    max_k = min(max(k_values), corpus_embeddings.shape[0])
+    _, nn_indices = _nn_search(query_embeddings, corpus_embeddings, max_k)
 
     gt = np.asarray(ground_truth_indices).reshape(-1, 1)
     results: dict[str, float] = {}
@@ -107,8 +133,8 @@ def compute_ndcg_at_k(
     -------
     Mean NDCG@k across all queries.
     """
-    index = _build_flat_index(corpus_embeddings.copy())
-    distances, _ = _search(index, query_embeddings.copy(), corpus_embeddings.shape[0])
+    n_corpus = corpus_embeddings.shape[0]
+    distances, _ = _nn_search(query_embeddings, corpus_embeddings, n_corpus)
     # distances are cosine similarities (higher = more similar)
     return float(ndcg_score(relevance_scores, distances, k=k))
 
@@ -157,8 +183,7 @@ def compute_mrr(
     MRR (scalar in ``(0, 1]``).
     """
     n_corpus = corpus_embeddings.shape[0]
-    index = _build_flat_index(corpus_embeddings.copy())
-    _, nn_indices = _search(index, query_embeddings.copy(), n_corpus)
+    _, nn_indices = _nn_search(query_embeddings, corpus_embeddings, n_corpus)
 
     gt = np.asarray(ground_truth_indices)
     reciprocal_ranks: list[float] = []

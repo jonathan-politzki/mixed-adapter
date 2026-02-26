@@ -67,10 +67,11 @@ def _split_data(
 ) -> dict[str, np.ndarray]:
     """Split paired embeddings into train / val / test sets.
 
-    The test set is further divided in half to create a *query* partition
-    and a *corpus* partition.  The ground truth for retrieval evaluation is
-    the identity mapping: query *i* should retrieve corpus *i* (they were
-    embedded from the same source document).
+    Queries and corpus use the **same** test indices so that the identity
+    ground truth holds: query *i* and corpus *i* are embeddings of the
+    same source document (old-model and new-model respectively).  The
+    oracle setting (new-queries vs new-corpus) should therefore yield
+    recall@1 ≈ 1.0.
 
     Returns
     -------
@@ -90,20 +91,18 @@ def _split_data(
     val_idx = indices[n_train : n_train + n_val]
     test_idx = indices[n_train + n_val :]
 
-    # Split test into queries (first half) and corpus (second half)
-    n_test_half = len(test_idx) // 2
-    query_idx = test_idx[:n_test_half]
-    corpus_idx = test_idx[n_test_half : 2 * n_test_half]
-
+    # Queries and corpus use the SAME test indices.  Query i (old-model
+    # embedding of doc i) should retrieve corpus i (new-model embedding
+    # of the same doc).
     return {
         "X_old_train": X_old[train_idx],
         "X_new_train": X_new[train_idx],
         "X_old_val": X_old[val_idx],
         "X_new_val": X_new[val_idx],
-        "X_old_test_q": X_old[query_idx],
-        "X_new_test_q": X_new[query_idx],
-        "X_old_test_c": X_old[corpus_idx],
-        "X_new_test_c": X_new[corpus_idx],
+        "X_old_test_q": X_old[test_idx],
+        "X_new_test_q": X_new[test_idx],
+        "X_old_test_c": X_old[test_idx],
+        "X_new_test_c": X_new[test_idx],
     }
 
 
@@ -383,6 +382,13 @@ def run_local_experiment(
 
         # Weighted combination: adapted[i, :] = sum_k weights[i, k] * cluster_outputs[k, i, :]
         adapted = np.einsum("nk,knd->nd", weights, cluster_outputs)
+
+        # L2-normalize output: blending orthogonal/affine transforms can
+        # shrink norms at cluster boundaries.  Re-normalizing keeps the
+        # adapted embeddings on the unit hypersphere for cosine retrieval.
+        norms = np.linalg.norm(adapted, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        adapted = adapted / norms
         return adapted
 
     # ------------------------------------------------------------------
@@ -547,13 +553,9 @@ def run_experiment(
         X_old.shape[0], X_old.shape, X_new.shape,
     )
 
-    # Handle dimension mismatches for Procrustes
-    if cfg["adapter"]["type"] == "procrustes" and X_old.shape[1] != X_new.shape[1]:
-        logger.info(
-            "Padding embeddings to match dimensions for Procrustes "
-            "(old=%d, new=%d).", X_old.shape[1], X_new.shape[1],
-        )
-        X_old, X_new = EmbeddingPairGenerator.pad_to_match(X_old, X_new)
+    # Note: cross-dimensional pairs (e.g. 384→768) are handled natively by
+    # each adapter type.  Procrustes zero-pads internally; neural adapters
+    # accept separate input_dim / output_dim.
 
     # ----- Train/val/test split -----
     splits = _split_data(

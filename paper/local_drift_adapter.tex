@@ -197,9 +197,11 @@ At inference time, given an old embedding $z = \fold(x)$, we compute soft assign
 where $\mu_k$ is the centroid of cluster $k$, $\mathrm{sim}(\cdot, \cdot)$ is cosine similarity, and $\tau > 0$ is a temperature parameter.
 The final adapted embedding is
 \begin{equation}
-  A(z) = \sum_{k=1}^{K} w_k(z) \cdot A_k(z).
+  A(z) = \mathrm{normalize}\!\left(\sum_{k=1}^{K} w_k(z) \cdot A_k(z)\right),
   \label{eq:moe}
 \end{equation}
+where $\mathrm{normalize}(v) = v / \|v\|_2$.
+The $\ell_2$-normalization is necessary because a convex combination of orthogonal (or affine) transforms is not itself orthogonal---blending can shrink norms at cluster boundaries, which would degrade cosine-based retrieval.
 Low temperature ($\tau \to 0$) recovers hard assignment; higher temperature smooths the boundaries.
 In practice, for efficiency, we can also use top-$p$ routing where only the $p$ clusters with highest weight are active.
 
@@ -224,10 +226,10 @@ This vector captures the direction and magnitude by which the global adapter \em
 \paragraph{Step 3: Construct combined features.}
 We form the augmented feature vector:
 \begin{equation}
-  \phi_i = \Bigl[\,\overline{\fold(x_i)}\;,\; \alpha \cdot \overline{d_i}\,\Bigr] \in \Rbb^{d_{\mathrm{old}} + d_{\mathrm{new}}},
+  \phi_i = \Bigl[\,\overline{\fold(x_i)}\;,\; \alpha \cdot \hat{d}_i\,\Bigr] \in \Rbb^{d_{\mathrm{old}} + d_{\mathrm{new}}},
   \label{eq:combined}
 \end{equation}
-where $\overline{v} = v / \|v\|_2$ denotes $\ell_2$-normalization and $\alpha > 0$ is a hyperparameter controlling the relative importance of drift information.
+where $\overline{v} = v / \|v\|_2$ denotes $\ell_2$-normalization of the positional features, $\hat{d}_i = d_i / \max_j \|d_j\|_2$ denotes \emph{global} normalization of the drift residuals (dividing by the maximum $\ell_2$-norm across all calibration points, so that small residuals remain small rather than being amplified to unit vectors), and $\alpha > 0$ controls the relative importance of drift information.
 
 \paragraph{Step 4: Cluster.}
 We run $k$-means on $\{\phi_i\}_{i \in \mathcal{S}}$.
@@ -279,7 +281,7 @@ This directly measures the adapter's ability to translate old embeddings into th
 We report:
 \begin{itemize}[leftmargin=*,itemsep=1pt]
   \item \textbf{Recall@$k$} for $k \in \{1, 5, 10, 100\}$: fraction of queries for which the true positive is in the top-$k$ retrieved documents.
-  \item \textbf{MRR@10}: mean reciprocal rank of the first relevant document.
+  \item \textbf{MRR}: mean reciprocal rank of the first relevant document, computed over the full corpus.
   \item \textbf{Cosine similarity}: average cosine similarity between adapted embeddings $A(\fold(x_i))$ and true new embeddings $\fnew(x_i)$ on a held-out test split.
 \end{itemize}
 
@@ -287,8 +289,8 @@ We report:
 \label{sec:experiments:impl}
 
 All adapters are implemented in PyTorch.
-We use FAISS \citep{johnson2019faiss} for $k$-means clustering and nearest-neighbor retrieval.
-Training uses Adam with learning rate $10^{-3}$, batch size 256, for up to 100 epochs with early stopping (patience 5) on validation cosine similarity.
+We use scikit-learn for $k$-means clustering and FAISS \citep{johnson2019faiss} for nearest-neighbor retrieval.
+Training uses Adam with learning rate $10^{-3}$, batch size 256, for up to 100 epochs with early stopping (patience 10) on validation combined loss ($0.5 \cdot \text{MSE} + 0.5 \cdot \text{cosine loss}$).
 For drift-aware clustering, we set $\alpha = 1.0$ by default and explore $\alpha \in \{0.5, 1.0, 2.0\}$.
 The MoE temperature is set to $\tau = 0.1$.
 We sweep $K \in \{2, 4, 8, 16, 32, 64\}$ and report the best as well as the full curve.
@@ -308,7 +310,7 @@ Table~\ref{tab:global} reports the performance of global adapter baselines acros
 \small
 \begin{tabular}{@{}llccc@{}}
 \toprule
-\textbf{Model Pair} & \textbf{Adapter} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+\textbf{Model Pair} & \textbf{Adapter} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR} \\
 \midrule
 \multirow{4}{*}{Same-family}
   & No adapter (old)  & 100.0 & 100.0 & 0.994 \\
@@ -385,7 +387,7 @@ Tables~\ref{tab:sweep_crossfam} and~\ref{tab:sweep_hard} show the effect of vary
 \small
 \begin{tabular}{@{}ccccc@{}}
 \toprule
-$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR} \\
 \midrule
 1 (global)   & 0.887 & 98.7 & 99.9 & 0.927 \\
 2            & 0.901 & 99.0 & 99.8 & 0.938 \\
@@ -407,7 +409,7 @@ Oracle (new) & 0.998 & 100.0 & 100.0 & 0.999 \\
 \small
 \begin{tabular}{@{}ccccc@{}}
 \toprule
-$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR@10} \\
+$K$ & \textbf{R@1} & \textbf{R@10} & \textbf{R@100} & \textbf{MRR} \\
 \midrule
 1 (global)   & 0.199 & 49.9 & 82.9 & 0.299 \\
 2            & 0.255 & 57.1 & 85.6 & 0.359 \\
@@ -496,7 +498,7 @@ Finally, our evaluation is limited to English sentence embeddings; the approach 
 % ============================================================
 \section*{Acknowledgments}
 
-\todo{Add acknowledgments.}
+Experiments were run on Lambda Cloud GPU instances. We thank the anonymous reviewers for their feedback.
 
 % ============================================================
 \bibliography{references}

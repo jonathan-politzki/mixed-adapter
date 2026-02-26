@@ -426,6 +426,13 @@ Oracle (new) & 0.998 & 100.0 & 100.0 & 0.999 \\
 \label{tab:sweep_hard}
 \end{table}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/performance_vs_k.pdf}
+\caption{Recall@1 vs.\ number of clusters $K$ for local affine adapters on two model pairs.  Performance improves monotonically up to $K \approx 32$, then degrades as per-cluster training data becomes insufficient.  The gain from local adaptation is much larger on the harder cross-family + cross-dimensional pair (right).}
+\label{fig:performance_vs_k}
+\end{figure}
+
 \paragraph{Findings.}
 The cluster-count sweeps and local-vs-global comparisons reveal several clear trends:
 
@@ -447,7 +454,16 @@ The entire premise of local adapters rests on drift being spatially non-uniform.
 To verify this, we compute the drift residual $d_i$ (Eq.~\ref{eq:residual}) for each point in the calibration set and measure spatial autocorrelation: for each point, we check whether its $k$-nearest neighbors (in the old embedding space) have similar drift residuals.
 High spatial correlation of drift validates the local adapter approach.
 
-The monotonic improvement with $K$ (Tables~\ref{tab:sweep_crossfam}--\ref{tab:sweep_hard}) provides indirect evidence: if drift were spatially uncorrelated, increasing $K$ would not help, since each cluster's training set would contain an arbitrary mix of drift directions.
+Figure~\ref{fig:drift_manifold} illustrates this on a synthetic example: three embedding regions experience qualitatively different transformations (rotation, non-linear warp, and translation), producing spatially clustered residuals that a single global map cannot resolve.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/drift_manifold.pdf}
+\caption{Synthetic illustration of spatially correlated drift.  Points are colored by the residual norm of a global Procrustes adapter.  Different regions experience qualitatively different transformations, producing clustered error patterns that motivate local adaptation.}
+\label{fig:drift_manifold}
+\end{figure}
+
+The monotonic improvement with $K$ (Tables~\ref{tab:sweep_crossfam}--\ref{tab:sweep_hard} and Figure~\ref{fig:performance_vs_k}) provides indirect evidence: if drift were spatially uncorrelated, increasing $K$ would not help, since each cluster's training set would contain an arbitrary mix of drift directions.
 The consistent gains from $K=2$ through $K=32$ confirm that nearby points in the old space do experience similar drift, validating the local adapter premise.
 
 \subsection{Per-Cluster Performance}

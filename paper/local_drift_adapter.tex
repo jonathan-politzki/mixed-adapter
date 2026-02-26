@@ -56,7 +56,7 @@
   \texttt{jonathan@jeantechnologies.com}
 }
 
-\date{}
+\date{February 2026}
 
 % ============================================================
 \begin{document}
@@ -114,6 +114,8 @@ In NLP, the problem is often encountered post-hoc: a practitioner has a corpus i
 \citet{vejendla2025drift} formalized this as the \emph{drift-adapter} problem and proposed three adapter architectures of increasing capacity: orthogonal Procrustes \citep{schoenemann1966procrustes}, low-rank affine, and residual MLP.
 All three are trained on a parallel corpus of $(\fold(x_i), \fnew(x_i))$ pairs.
 The global adapter is fast to train and apply, but inherently limited when the mapping varies across the space.
+Concurrently, \citet{yoon2025embedding} proposed \emph{Embedding-Converter}, a unified framework for cross-model embedding transformation.
+While their work focuses on a general-purpose translation architecture, we explicitly target the \emph{non-uniformity} of drift via a mixture-of-experts approach, demonstrating that local specialization outperforms global mappings on heterogeneous transformations.
 
 \subsection{Cross-Lingual Embedding Alignment}
 \label{sec:related:crosslingual}
